@@ -19,7 +19,11 @@ func main() {
 	window := application.NewWindow("Hello World")
 	label := widget.NewLabel(getIPAsWords(GetLocalIP()))
 	window.SetContent(label)
-
+	window.SetOnDropped(func(position fyne.Position, uris []fyne.URI) {
+		for _, uri := range uris {
+			println(uri.String())
+		}
+	})
 	// Channel to communicate between HTTP server and GUI
 	updateLabel := make(chan string)
 	go func() {
