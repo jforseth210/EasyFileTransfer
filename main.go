@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -16,16 +21,22 @@ import (
 
 func main() {
 	application := app.New()
-	window := application.NewWindow("Hello World")
+	window := application.NewWindow("File Share")
 	label := widget.NewLabel(getIPAsWords(GetLocalIP()))
 	window.SetContent(label)
 	window.SetOnDropped(func(position fyne.Position, uris []fyne.URI) {
+		uriStrings := []string{}
 		for _, uri := range uris {
-			println(uri.String())
+			uriStrings = append(uriStrings, uri.Path())
+		}
+		err := UploadMultipleFiles("http://10.21.20.202:8080", "file", uriStrings)
+		if err != nil {
+			log.Fatal(err)
 		}
 	})
 	// Channel to communicate between HTTP server and GUI
 	updateLabel := make(chan string)
+
 	go func() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "POST" {
@@ -106,4 +117,41 @@ func getIPAsWords(ip net.IP) string {
 	}
 	println(strings.Join(digitStrings, " "))
 	return strings.Join(digitStrings, " ")
+}
+
+func UploadMultipleFiles(url string, paramName string, filePaths []string) error {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for i, filePath := range filePaths {
+		file, err := os.Open(filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		part, err := writer.CreateFormFile("file"+strconv.Itoa(i), filepath.Base(filePath))
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(part, file)
+		if err != nil {
+			return err
+		}
+	}
+	err := writer.Close()
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return err
+	}
+	request.Header.Add("Content-Type", writer.FormDataContentType())
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	// Handle the server response...
+	return nil
 }
