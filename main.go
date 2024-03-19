@@ -38,45 +38,56 @@ func main() {
 	updateLabel := make(chan string)
 
 	go func() {
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
-				// Parse multipart form
-				err := r.ParseMultipartForm(10 << 20) // 10 MB max
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				// Get the uploaded file
-				file, handler, err := r.FormFile("file")
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				defer file.Close()
-
-				saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
-					if err != nil {
-						fmt.Println("Error saving file:", err)
-						return
-					}
-					if writer == nil {
-						fmt.Println("Save file dialog canceled")
-						return
-					}
-					io.Copy(writer, file)
-				}, window)
-				saveDialog.SetFileName(handler.Filename)
-				saveDialog.Show()
-
-				updateLabel <- fmt.Sprintf("File uploaded: %s", handler.Filename)
+		http.HandleFunc("/", func(responseWriter http.ResponseWriter, request *http.Request) {
+			if request.Method != "POST" {
 				return
 			}
-			// If not a POST request, display the form
-			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, "<form enctype=\"multipart/form-data\" method=\"post\">"+
-				"<input type=\"file\" name=\"file\"/><br>"+
-				"<input type=\"submit\" value=\"Upload\"/></form>")
+			// Parse multipart form
+			err := request.ParseMultipartForm(10 << 20) // 10 MB max
+			if err != nil {
+				http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			files := []multipart.File{}
+			handlers := []*multipart.FileHeader{}
+			for i := 0; i < len(request.MultipartForm.File); i++ {
+				// Get the uploaded file
+				file, handler, err := request.FormFile("file" + strconv.Itoa(i))
+				if err != nil {
+					http.Error(responseWriter, err.Error(), http.StatusBadRequest)
+					return
+				}
+				files = append(files, file)
+				handlers = append(handlers, handler)
+				defer file.Close()
+			}
+			dialog.ShowFolderOpen(func(uris fyne.ListableURI, err error) {
+				if err != nil {
+					http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				if uris == nil {
+					return
+				}
+				for i, file := range files {
+					// Create a new file in the selected directory with the same name as the uploaded file
+					emptyFile, err := os.Create(filepath.Join(uris.Path(), handlers[i].Filename))
+					if err != nil {
+						http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					defer file.Close()
+
+					// Copy the contents of the uploaded file to the newly created file
+					_, err = io.Copy(emptyFile, file)
+					if err != nil {
+						http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					updateLabel <- fmt.Sprintf("File uploaded: %s", handlers[i].Filename)
+				}
+			}, window)
 		})
 
 		http.ListenAndServe(":8080", nil)
