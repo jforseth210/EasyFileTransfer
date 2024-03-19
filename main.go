@@ -8,32 +8,62 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
 
 func main() {
-	application := app.New()
-	window := application.NewWindow("File Share")
-	label := widget.NewLabel(getIPAsWords(GetLocalIP()))
-	window.SetContent(label)
+	app := app.New()
+	window := app.NewWindow("File Transfer")
+
+	// Send Files Column
+	sendFilesLabel := widget.NewLabel("Drop files anywhere in this window to send them")
+
+	sendFilesColumn := container.NewVBox(
+		widget.NewLabel("Send Files"),
+		sendFilesLabel,
+	)
+
+	// Receive Files Column
+	receiveFilesText := widget.NewLabel("This device's name is \"" + EncodeIPToWords(GetLocalIP()) + "\".\n To send files to this device, leave this window open\n and enter this name on the sending device.")
+
+	receiveFilesColumn := container.NewVBox(
+		widget.NewLabel("Receive Files"),
+		receiveFilesText,
+	)
+
+	// Combine both columns
+	columns := container.NewGridWithColumns(2, sendFilesColumn, receiveFilesColumn)
+
 	window.SetOnDropped(func(position fyne.Position, uris []fyne.URI) {
 		uriStrings := []string{}
 		for _, uri := range uris {
 			uriStrings = append(uriStrings, uri.Path())
 		}
-		err := UploadMultipleFiles("http://10.21.20.202:8080", uriStrings)
-		if err != nil {
-			log.Fatal(err)
-		}
+		addressEntry := widget.NewEntry()
+		form := widget.NewForm()
+		form.Append("Device Name", addressEntry)
+		dialog.ShowForm("Send Files", "Send", "Cancel", form.Items, func(confirmed bool) {
+			if !confirmed {
+				return
+			}
+			err := UploadMultipleFiles("http://"+DecodeIPFromWords(addressEntry.Text).String()+":8080", uriStrings)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}, window)
+
 	})
-	// Channel to communicate between HTTP server and GUI
+
+	window.SetContent(columns)
 	updateLabel := make(chan string)
 
 	go func() {
@@ -61,7 +91,7 @@ func main() {
 			}
 
 			dialog.ShowConfirm("Accept Files",
-				"\""+getIPAsWords(net.ParseIP(strings.Split(request.RemoteAddr, ":")[0]))+"\" wants to send you these files:"+"\n"+strings.Join(getFileNames(handlers), "\n")+"\n Accept?", func(ok bool) {
+				"\""+EncodeIPToWords(net.ParseIP(strings.Split(request.RemoteAddr, ":")[0]))+"\" wants to send you these files:"+"\n"+strings.Join(getFileNames(handlers), "\n")+"\n Accept?", func(ok bool) {
 					if !ok {
 						return
 					}
@@ -102,15 +132,6 @@ func main() {
 
 		http.ListenAndServe(":8080", nil)
 	}()
-	// Update label text based on messages from HTTP server
-	go func() {
-		for {
-			msg := <-updateLabel
-			label.SetText(msg)
-			window.SetContent(label)
-		}
-	}()
-
 	window.ShowAndRun()
 }
 
@@ -137,14 +158,36 @@ func getFileNames(handlers []*multipart.FileHeader) []string {
 	}
 	return fileNames
 }
-func getIPAsWords(ip net.IP) string {
+func EncodeIPToWords(ip net.IP) string {
 	digits := ip.To4()
 	var digitStrings []string
 	for _, digit := range digits {
 		digitStrings = append(digitStrings, wordList[digit])
 	}
 	println(strings.Join(digitStrings, " "))
+	println(ip.String())
 	return strings.Join(digitStrings, " ")
+}
+
+func DecodeIPFromWords(str string) net.IP {
+	digitWords := strings.Split(str, " ")
+	if len(digitWords) != 4 {
+		return nil
+	}
+	actualDigits := []byte{}
+	for _, digitWord := range digitWords {
+		for j, word := range wordList {
+			if digitWord == word {
+				actualDigits = append(actualDigits, byte(j))
+			}
+		}
+	}
+	ip, ok := netip.AddrFromSlice(actualDigits)
+	if !ok {
+		return net.IP{}
+	}
+	return net.IP(ip.AsSlice())
+
 }
 
 func UploadMultipleFiles(url string, filePaths []string) error {
