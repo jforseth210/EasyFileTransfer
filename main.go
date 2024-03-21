@@ -8,7 +8,8 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"net/netip"
+	"time"
+
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,47 +24,30 @@ import (
 func main() {
 	app := app.New()
 	window := app.NewWindow("File Transfer")
+	nameLabelLabel := widget.NewLabel("Name")
+	nameLabelLabel.Alignment = fyne.TextAlignCenter
+
+	nameLabel := widget.NewLabel(EncodeIPToWords(GetLocalIP()))
+	nameLabel.TextStyle = widget.RichTextStyleHeading.TextStyle
+	nameLabel.Alignment = fyne.TextAlignCenter
 
 	// Send Files Column
 	sendFilesLabel := widget.NewLabel("Drop files anywhere in this window to send them")
-
 	sendFilesColumn := container.NewVBox(
-		widget.NewLabel("Send Files"),
+		nameLabelLabel,
+		nameLabel,
 		sendFilesLabel,
 	)
-
-	// Receive Files Column
-	receiveFilesText := widget.NewLabel("This device's name is \"" + EncodeIPToWords(GetLocalIP()) + "\".\n To send files to this device, leave this window open\n and enter this name on the sending device.")
-
-	receiveFilesColumn := container.NewVBox(
-		widget.NewLabel("Receive Files"),
-		receiveFilesText,
-	)
-
-	// Combine both columns
-	columns := container.NewGridWithColumns(2, sendFilesColumn, receiveFilesColumn)
 
 	window.SetOnDropped(func(position fyne.Position, uris []fyne.URI) {
 		uriStrings := []string{}
 		for _, uri := range uris {
 			uriStrings = append(uriStrings, uri.Path())
 		}
-		addressEntry := widget.NewEntry()
-		form := widget.NewForm()
-		form.Append("Device Name", addressEntry)
-		dialog.ShowForm("Send Files", "Send", "Cancel", form.Items, func(confirmed bool) {
-			if !confirmed {
-				return
-			}
-			err := UploadMultipleFiles("http://"+DecodeIPFromWords(addressEntry.Text).String()+":8080", uriStrings)
-			if err != nil {
-				log.Fatal(err)
-			}
-		}, window)
-
+		ShowAddressForm(window, uriStrings)
 	})
 
-	window.SetContent(columns)
+	window.SetContent(sendFilesColumn)
 	updateLabel := make(chan string)
 
 	go func() {
@@ -130,8 +114,9 @@ func main() {
 				}, window)
 		})
 
-		http.ListenAndServe(":8080", nil)
+		http.ListenAndServe(":2364", nil)
 	}()
+	window.Resize(fyne.NewSize(600, 400))
 	window.ShowAndRun()
 }
 
@@ -145,6 +130,27 @@ func GetLocalIP() net.IP {
 	localAddress := conn.LocalAddr().(*net.UDPAddr)
 
 	return localAddress.IP
+}
+
+func ShowAddressForm(window fyne.Window, uriStrings []string) {
+	addressEntry := widget.NewEntry()
+	form := widget.NewForm()
+	form.Append("", addressEntry)
+	dialog.ShowForm("Enter Recipient Name", "Send", "Cancel", form.Items, func(confirmed bool) {
+		if !confirmed {
+			return
+		}
+		ip := DecodeIPFromWords(addressEntry.Text)
+		if ip == nil {
+			dialog.ShowError(fmt.Errorf("Unable to connect to "+addressEntry.Text), window)
+			//ShowAddressForm(window, uriStrings)
+			return
+		}
+		err := UploadMultipleFiles("http://"+ip.String()+":2364", uriStrings)
+		if err != nil {
+			dialog.ShowError(err, window)
+		}
+	}, window)
 }
 
 // wordfrequency.info 256 most common nouns
@@ -165,31 +171,40 @@ func UploadMultipleFiles(url string, filePaths []string) error {
 	for _, filePath := range filePaths {
 		file, err := os.Open(filePath)
 		if err != nil {
-			return err
+			return fmt.Errorf("Error opening file: " + filePath)
+		}
+		fi, err := file.Stat()
+		switch {
+		case err != nil:
+			return fmt.Errorf("Error opening file: " + filePath)
+		case fi.IsDir():
+			return fmt.Errorf("Folders aren't supported. Please select a file instead.")
+		default:
+			// it's not a directory
 		}
 		defer file.Close()
 		part, err := writer.CreateFormFile("file", filepath.Base(filePath))
 		if err != nil {
-			return err
+			return fmt.Errorf("Error preparing to send file: " + filePath)
 		}
 		_, err = io.Copy(part, file)
 		if err != nil {
-			return err
+			return fmt.Errorf("Error preparing to send file: " + filePath)
 		}
 	}
 	err := writer.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("Error preparing to send file(s)")
 	}
 	request, err := http.NewRequest("POST", url, body)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error sending file(s)")
 	}
 	request.Header.Add("Content-Type", writer.FormDataContentType())
-	client := &http.Client{}
+	client := &http.Client{Timeout: 2 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error sending file(s)")
 	}
 	defer response.Body.Close()
 	// Handle the server response...
